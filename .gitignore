@@ -1,0 +1,20 @@
+# Python caches and local tooling
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local refresh state and reproducible release outputs
+data/refresh_state.json
+data/refresh_log.jsonl
+data/releases/
+
+# Incoming workbooks are operational inputs, not committed source data
+data/incoming/*.xlsx
+
+# Local Streamlit/runtime files
+.streamlit/secrets.toml
+*.log
