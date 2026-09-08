@@ -55,6 +55,28 @@ The watcher infers `presidential` or `kitui_governor` from the filename, skips h
 
 The dashboard includes the current/future-dated cycle supplied by each workbook. It determines the current cycle from the maximum valid `cycle_id`; it does not compare source dates with the server clock.
 
+## Authentication and geographic access
+
+The app now includes a provider-agnostic authentication and authorization foundation. On first run, create the initial administrator account. Administrators can register users, assign a role, activate/deactivate accounts, and assign geography scopes from the Administration panel.
+
+Roles restrict the maximum geography level as follows:
+
+- `MCA`: ward only
+- `MP`: sub-county/constituency and ward
+- `Governor`, `Senator`, `Women Representative`: county, sub-county, and ward
+- `President`: all supported data and geography levels
+- `Administrator`: system and user management
+
+Administrators assign scopes through cascading dropdowns: dataset, access depth, county, sub-county/constituency, and ward(s) where applicable. The underlying representation is `dataset|county|sub_county|constituency|ward`, with blank fields as wildcards. For example, a county-level Kitui assignment is stored as `|Kitui|||`; a sub-county assignment as `|Kitui|Kitui Central||`; and a ward assignment as `|Kitui|Kitui Central||Ward Name`. The current implementation filters all frames server-side before maps, trends, tables, and downloads are created.
+
+The prototype stores salted PBKDF2 password hashes in the ignored local file `data/auth.sqlite3`. For production deployment, replace the local authentication function with an organization-managed OIDC provider such as Microsoft Entra ID or Keycloak, enable MFA, and retain the same role/scope authorization policy.
+
+### Microsoft Entra pilot deployment
+
+The app uses native Streamlit OIDC when `[auth]` and `[auth.microsoft]` secrets are configured. Register a single-tenant web application in Microsoft Entra ID, add the exact deployed callback URL ending in `/oauth2callback`, and restrict the app registration to the pilot security group. Copy `.streamlit/secrets.example.toml` into the deployment secret manager and replace its placeholders; never commit the real secret values.
+
+For Streamlit Community Cloud, deploy the private app from the GitHub repository, configure the values in the app's Secrets panel, and use a separate Entra app registration for local development and the pilot URL. The administrator must register each pilot user's Microsoft email/UPN in the Administration panel before that user can access the dashboard. Keep `data/auth.sqlite3` on a persistent volume or replace it with a managed database before relying on it for a multi-instance deployment.
+
 ## Included assets
 
 - `D4D_Kenya_Presidential.xlsx`

@@ -11,11 +11,13 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from src.auth import ROLES, allowed_levels, authenticate, authenticate_oidc, create_user, filter_bundle, filter_frame, initialize, is_admin, list_users, scopes_for, update_user, user_count
 from src.data_processing import regression_summary
 
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
+initialize(ROOT)
 BOUNDARY_FILES = {
     "country": DATA_DIR / "kenya_country.geojson",
     "county": DATA_DIR / "kenya_counties.geojson",
@@ -317,18 +319,245 @@ def dataframe_download(frame: pd.DataFrame) -> bytes:
     return output.getvalue()
 
 
+def parse_scope_lines(value: str) -> list[dict[str, str | None]]:
+    """Parse admin scope entries: dataset|county|sub_county|constituency|ward."""
+    scopes = []
+    for raw_line in value.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        parts = [part.strip() or None for part in line.split("|")]
+        if len(parts) > 5:
+            raise ValueError("Each scope line must have at most five fields separated by |.")
+        parts += [None] * (5 - len(parts))
+        scopes.append(dict(zip(["dataset", "county", "sub_county", "constituency", "ward"], parts)))
+    return scopes
+
+
+def scope_lines(scopes: list[dict[str, str | None]]) -> str:
+    return "\n".join("|".join(scope.get(column) or "" for column in ["dataset", "county", "sub_county", "constituency", "ward"]) for scope in scopes)
+
+
+def scope_builder(role: str, widget_prefix: str, initial: list[dict[str, str | None]] | None = None) -> list[dict[str, str | None]]:
+    """Build restricted scopes using cascading dropdowns instead of free text."""
+    if role in {"Administrator", "President"}:
+        st.caption("This role has unrestricted access; no geography scope is required.")
+        return []
+    initial_scope = (initial or [{}])[0]
+    dataset_values = ["All datasets"] + list(DATASETS)
+    initial_dataset = initial_scope.get("dataset") or "All datasets"
+    if initial_dataset not in dataset_values:
+        initial_dataset = "All datasets"
+    dataset_choice = st.selectbox("Dataset", dataset_values, index=dataset_values.index(initial_dataset), key=f"{widget_prefix}_dataset")
+    source_frames = []
+    selected_datasets = list(DATASETS) if dataset_choice == "All datasets" else [dataset_choice]
+    for dataset in selected_datasets:
+        source_frames.append(load_dataset(dataset)["history"])
+    source = pd.concat(source_frames, ignore_index=True, sort=False)
+    county_values = sorted(source["county"].dropna().astype(str).unique().tolist())
+    initial_county = initial_scope.get("county") if initial_scope.get("county") in county_values else None
+    county = st.selectbox("County", ["Select county"] + county_values, index=(county_values.index(initial_county) + 1 if initial_county else 0), key=f"{widget_prefix}_county")
+    selected_county = None if county == "Select county" else county
+    depth_options = {
+        "Governor": ["County and descendants", "Sub-county and descendants", "Specific ward(s)"],
+        "Senator": ["County and descendants", "Sub-county and descendants", "Specific ward(s)"],
+        "Women Representative": ["County and descendants", "Sub-county and descendants", "Specific ward(s)"],
+        "MP": ["Sub-county and descendants", "Specific ward(s)"],
+        "MCA": ["Specific ward(s)"],
+    }[role]
+    inferred_depth = "Specific ward(s)" if initial_scope.get("ward") else "Sub-county and descendants" if initial_scope.get("sub_county") else "County and descendants"
+    depth = st.selectbox("Access depth", depth_options, index=depth_options.index(inferred_depth) if inferred_depth in depth_options else 0, key=f"{widget_prefix}_depth")
+    if selected_county is None:
+        st.info("Select a county to continue.")
+        return []
+    if depth == "County and descendants":
+        return [{"dataset": None if dataset_choice == "All datasets" else dataset_choice, "county": selected_county, "sub_county": None, "constituency": None, "ward": None}]
+    subcounty_values = sorted(source.loc[source["county"].eq(selected_county), "sub_county"].dropna().astype(str).unique().tolist()) if "sub_county" in source else []
+    initial_subcounty = initial_scope.get("sub_county") if initial_scope.get("sub_county") in subcounty_values else None
+    subcounty = st.selectbox("Sub-county / constituency", ["Select sub-county"] + subcounty_values, index=(subcounty_values.index(initial_subcounty) + 1 if initial_subcounty else 0), key=f"{widget_prefix}_subcounty")
+    selected_subcounty = None if subcounty == "Select sub-county" else subcounty
+    if selected_subcounty is None:
+        st.info("Select a sub-county to continue.")
+        return []
+    if depth == "Sub-county and descendants":
+        return [{"dataset": None if dataset_choice == "All datasets" else dataset_choice, "county": selected_county, "sub_county": selected_subcounty, "constituency": None, "ward": None}]
+    if "ward" not in source:
+        st.warning("This dataset has no ward field. Choose a dataset that includes ward data.")
+        return []
+    ward_values = sorted(source.loc[source["county"].eq(selected_county) & source["sub_county"].eq(selected_subcounty), "ward"].dropna().astype(str).unique().tolist())
+    selected_wards = st.multiselect("Ward(s)", ward_values, default=[initial_scope["ward"]] if initial_scope.get("ward") in ward_values else [], key=f"{widget_prefix}_wards")
+    return [{"dataset": None if dataset_choice == "All datasets" else dataset_choice, "county": selected_county, "sub_county": selected_subcounty, "constituency": None, "ward": ward} for ward in selected_wards]
+
+
+def render_authentication() -> dict:
+    current_user = st.session_state.get("auth_user")
+    if current_user:
+        return current_user
+    try:
+        auth_config = st.secrets.get("auth")
+    except Exception:
+        auth_config = None
+    oidc_configured = bool(auth_config and (auth_config.get("microsoft") or auth_config.get("client_id")))
+    if oidc_configured:
+        if not st.user.is_logged_in:
+            st.title("Data for Decision")
+            st.info("Sign in with your organization account to continue.")
+            if st.button("Sign in with Microsoft"):
+                st.login("microsoft")
+            st.stop()
+        identity = next((st.user.get(field) for field in ["sub", "email", "preferred_username"] if st.user.get(field)), None)
+        email = st.user.get("email") or st.user.get("preferred_username")
+        current_user = authenticate_oidc(ROOT, identity or "", email)
+        if current_user is None and user_count(ROOT) == 0:
+            try:
+                app_config = st.secrets.get("app") or {}
+                bootstrap_email = str(app_config.get("bootstrap_admin_email", "")).strip().lower()
+            except Exception:
+                bootstrap_email = ""
+            if bootstrap_email and email and email.strip().lower() == bootstrap_email:
+                create_user(ROOT, email, st.user.get("name") or email, "Administrator", scopes=[], auth_subject=identity or email, actor="bootstrap")
+                current_user = authenticate_oidc(ROOT, identity or "", email)
+        if current_user is None:
+            st.error("Your organization account is authenticated but has not been registered for this dashboard. Contact an administrator.")
+            st.stop()
+        st.session_state["auth_user"] = current_user
+        return current_user
+    if user_count(ROOT) == 0:
+        st.title("Initial administrator setup")
+        st.info("Create the first administrator account. In production, replace local credentials with an organization-managed OIDC provider.")
+        with st.form("initial_admin_form"):
+            username = st.text_input("Administrator username")
+            display_name = st.text_input("Display name")
+            password = st.text_input("Password", type="password", help="Use at least 12 characters.")
+            confirm = st.text_input("Confirm password", type="password")
+            submitted = st.form_submit_button("Create administrator")
+        if submitted:
+            if password != confirm:
+                st.error("Passwords do not match.")
+            else:
+                try:
+                    create_user(ROOT, username, display_name, "Administrator", password)
+                    st.success("Administrator created. Sign in to continue.")
+                    st.rerun()
+                except ValueError as error:
+                    st.error(str(error))
+                except Exception:
+                    st.error("That username is already registered or could not be created.")
+        st.stop()
+    st.title("Data for Decision")
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Sign in")
+    if submitted:
+        current_user = authenticate(ROOT, username, password)
+        if current_user:
+            st.session_state["auth_user"] = current_user
+            st.rerun()
+        st.error("Invalid username, password, or inactive account.")
+    st.stop()
+
+
+def render_admin_panel(user: dict) -> None:
+    if not is_admin(user):
+        return
+    with st.sidebar.expander("Administration", expanded=False):
+        with st.form("create_user_form"):
+            st.markdown("**Register user**")
+            username = st.text_input("Username", key="new_username")
+            auth_subject = st.text_input("Microsoft email or subject", key="new_auth_subject", help="Use the user's Entra email/UPN for the pilot. The value must match the identity returned after sign-in.")
+            display_name = st.text_input("Display name", key="new_display_name")
+            role = st.selectbox("Role", list(ROLES), key="new_role")
+            oidc_active = False
+            try:
+                configured_auth = st.secrets.get("auth")
+                oidc_active = bool(configured_auth and (configured_auth.get("microsoft") or configured_auth.get("client_id")))
+            except Exception:
+                pass
+            password = "" if oidc_active else st.text_input("Temporary password", type="password", key="new_password", help="At least 12 characters for local development.")
+            scopes = scope_builder(role, "new_scope")
+            submitted = st.form_submit_button("Create user")
+        if submitted:
+            try:
+                if role not in {"Administrator", "President"} and not scopes:
+                    raise ValueError("Select a valid county, sub-county, or ward scope before creating this user.")
+                if oidc_active and not auth_subject.strip():
+                    raise ValueError("Enter the user's Microsoft email or Entra subject.")
+                create_user(ROOT, username, display_name, role, password, scopes, actor=user["username"], auth_subject=auth_subject.strip() or None)
+                st.success("User registered.")
+                st.rerun()
+            except ValueError as error:
+                st.error(str(error))
+            except Exception:
+                st.error("Could not create user. Check that the username is unique.")
+
+        users = list_users(ROOT)
+        if not users.empty:
+            st.markdown("**Manage user**")
+            choices = users["username"].tolist()
+            selected_username = st.selectbox("Registered user", choices, key="managed_username")
+            selected = users[users["username"].eq(selected_username)].iloc[0]
+            existing_scope_records = scopes_for(ROOT, int(selected["id"]))
+            if existing_scope_records:
+                st.caption(f"Current scope: {scope_lines(existing_scope_records)}")
+            with st.form("update_user_form"):
+                managed_role = st.selectbox("Role", list(ROLES), index=list(ROLES).index(selected["role"]), key="managed_role")
+                active = st.checkbox("Account active", value=bool(selected["active"]), key="managed_active")
+                managed_scopes = scope_builder(managed_role, "managed_scope", existing_scope_records)
+                update_submitted = st.form_submit_button("Save permissions")
+            if update_submitted:
+                try:
+                    if managed_role not in {"Administrator", "President"} and not managed_scopes:
+                        raise ValueError("Select a valid county, sub-county, or ward scope before saving this user.")
+                    update_user(ROOT, int(selected["id"]), managed_role, active, managed_scopes, user["username"])
+                    st.success("User permissions updated.")
+                    st.rerun()
+                except ValueError as error:
+                    st.error(str(error))
+            st.dataframe(users[["username", "auth_subject", "display_name", "role", "active", "last_login_at"]], hide_index=True, width="stretch")
+
+
 st.markdown(f"<h1 style='color:{COLORS['navy']}; margin-bottom:0'>Data for Decision</h1><p style='color:{COLORS['grey']}; margin-top:0'>Interactive polling results by cycle and geography</p><p class='source-note'>Kenya polling dashboard · Source workbooks and administrative boundaries are shown in the data notes below.</p>", unsafe_allow_html=True)
+
+auth_user = render_authentication()
 
 with st.sidebar:
     st.header("Explore")
-    dataset_name = st.selectbox("Dataset / election", list(DATASETS))
+    st.caption(f"Signed in: {auth_user['display_name']} ({auth_user['role']})")
+    if st.button("Sign out"):
+        st.session_state.pop("auth_user", None)
+        try:
+            configured_auth = st.secrets.get("auth")
+            if configured_auth and (configured_auth.get("microsoft") or configured_auth.get("client_id")) and st.user.is_logged_in:
+                st.logout()
+            else:
+                st.rerun()
+        except Exception:
+            st.rerun()
+    render_admin_panel(auth_user)
+    accessible_datasets = []
+    for candidate in DATASETS:
+        candidate_bundle = load_dataset(candidate)
+        if is_admin(auth_user) or auth_user.get("role") == "President" or not filter_frame(candidate_bundle["history"], auth_user, candidate, ROOT).empty:
+            accessible_datasets.append(candidate)
+    if not accessible_datasets:
+        st.error("Your account has no assigned data scope. Contact an administrator.")
+        st.stop()
+    dataset_name = st.selectbox("Dataset / election", accessible_datasets)
     cfg = DATASETS[dataset_name]
-    bundle = load_dataset(dataset_name)
+    bundle = filter_bundle(load_dataset(dataset_name), auth_user, dataset_name, ROOT)
     history = bundle["history"].copy()
     snapshot = bundle["snapshot"].copy()
+    if history.empty:
+        st.error("Your account has no records in this dataset. Contact an administrator.")
+        st.stop()
     cycle_values = sorted(history["cycle_id"].dropna().astype(int).unique())
     view_mode = st.selectbox("Display mode", ["Cycle view", "Latest assessment"])
-    level_options = ["National", "County", "Sub-county"] + (["Ward"] if "ward" in cfg["hierarchy"] else [])
+    available_levels = ["National", "County", "Sub-county"] + (["Ward"] if "ward" in cfg["hierarchy"] else [])
+    level_options = [level_option for level_option in available_levels if level_option in allowed_levels(auth_user)]
+    if not level_options:
+        st.error("Your role has no geography level available in this dataset.")
+        st.stop()
     level = st.selectbox("Geography level", level_options)
     selected_county = st.selectbox("County", ["All"] + sorted(history["county"].dropna().unique().tolist()))
     selected_subcounty = "All"

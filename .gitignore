@@ -11,10 +11,13 @@ venv/
 data/refresh_state.json
 data/refresh_log.jsonl
 data/releases/
+data/auth.sqlite3
+data/auth.sqlite3-*
 
 # Incoming workbooks are operational inputs, not committed source data
 data/incoming/*.xlsx
 
 # Local Streamlit/runtime files
 .streamlit/secrets.toml
+.streamlit/secrets.local.toml
 *.log
