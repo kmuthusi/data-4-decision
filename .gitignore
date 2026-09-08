@@ -20,4 +20,5 @@ data/incoming/*.xlsx
 # Local Streamlit/runtime files
 .streamlit/secrets.toml
 .streamlit/secrets.local.toml
+.env
 *.log
