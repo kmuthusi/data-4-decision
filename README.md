@@ -69,13 +69,21 @@ Roles restrict the maximum geography level as follows:
 
 Administrators assign scopes through cascading dropdowns: dataset, access depth, county, sub-county/constituency, and ward(s) where applicable. The underlying representation is `dataset|county|sub_county|constituency|ward`, with blank fields as wildcards. For example, a county-level Kitui assignment is stored as `|Kitui|||`; a sub-county assignment as `|Kitui|Kitui Central||`; and a ward assignment as `|Kitui|Kitui Central||Ward Name`. The current implementation filters all frames server-side before maps, trends, tables, and downloads are created.
 
-The prototype stores salted PBKDF2 password hashes in the ignored local file `data/auth.sqlite3`. For production deployment, replace the local authentication function with an organization-managed OIDC provider such as Microsoft Entra ID or Keycloak, enable MFA, and retain the same role/scope authorization policy.
+For local development without a database secret, the app stores salted PBKDF2 password hashes in the ignored local file `data/auth.sqlite3`. When a PostgreSQL URL is configured, users, scopes, and audit events are stored in PostgreSQL instead. The application initializes the required schema on startup.
+
+To migrate an existing local registry once:
+
+```powershell
+python scripts/migrate_auth_to_postgres.py --database-url "postgresql://USER:PASSWORD@HOST/DATABASE?sslmode=require"
+```
+
+For production deployment, use an organization-managed OIDC provider such as Google, Microsoft Entra ID, or Keycloak, enable MFA, and retain the same role/scope authorization policy.
 
 ### Microsoft Entra pilot deployment
 
 The app uses native Streamlit OIDC when `[auth]` and a named provider section such as `[auth.google]` or `[auth.microsoft]` are configured. The pilot template is configured for Google OIDC. Register the exact deployed callback URL ending in `/oauth2callback`, then copy `.streamlit/secrets.example.toml` into the deployment secret manager and replace its placeholders; never commit the real secret values.
 
-For Streamlit Community Cloud, deploy the private app from the GitHub repository, configure the values in the app's Secrets panel, and use a separate Google OAuth client for local development and the pilot URL. The administrator must register each pilot user's Google email in the Administration panel before that user can access the dashboard. Keep `data/auth.sqlite3` on a persistent volume or replace it with a managed database before relying on it for a multi-instance deployment.
+For Streamlit Community Cloud, deploy the private app from the GitHub repository, configure the OIDC and PostgreSQL values in the app's Secrets panel, and use separate Google OAuth clients for local development and the pilot URL. The administrator must register each pilot user's Google email in the Administration panel before that user can access the dashboard. PostgreSQL is the authoritative user/scope store, so redeployments do not require re-registration.
 
 ## Included assets
 

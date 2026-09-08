@@ -11,12 +11,18 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from src.auth import ROLES, allowed_levels, authenticate, authenticate_oidc, create_user, filter_bundle, filter_frame, initialize, is_admin, list_users, scopes_for, update_user, user_count
+from src.auth import ROLES, allowed_levels, authenticate, authenticate_oidc, configure_database, create_user, filter_bundle, filter_frame, initialize, is_admin, list_users, scopes_for, update_user, user_count
 from src.data_processing import regression_summary
 
 
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
+try:
+    database_config = st.secrets.get("database") or {}
+    database_url = database_config.get("url") or st.secrets.get("database_url")
+except Exception:
+    database_url = None
+configure_database(database_url)
 initialize(ROOT)
 BOUNDARY_FILES = {
     "country": DATA_DIR / "kenya_country.geojson",
