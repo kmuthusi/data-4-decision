@@ -162,7 +162,7 @@ def create_user(root: Path, username: str, display_name: str, role: str, passwor
 def authenticate(root: Path, username: str, password: str) -> dict[str, Any] | None:
     initialize(root)
     with connect(root) as connection:
-        row = _execute(connection, "SELECT * FROM users WHERE username = ? AND active = 1", (username.strip().lower(),)).fetchone()
+        row = _execute(connection, "SELECT * FROM users WHERE username = ? AND active = TRUE", (username.strip().lower(),)).fetchone()
         if row is None or not _password_matches(password, row["password_hash"]):
             return None
         _execute(connection, "UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), row["id"]))
@@ -177,7 +177,7 @@ def authenticate_oidc(root: Path, subject: str, email: str | None = None) -> dic
         return None
     placeholders = ",".join("?" for _ in identities)
     with connect(root) as connection:
-        row = _execute(connection, f"SELECT * FROM users WHERE active = 1 AND (lower(auth_subject) IN ({placeholders}) OR lower(username) IN ({placeholders}))", tuple(identities + identities)).fetchone()
+        row = _execute(connection, f"SELECT * FROM users WHERE active = TRUE AND (lower(auth_subject) IN ({placeholders}) OR lower(username) IN ({placeholders}))", tuple(identities + identities)).fetchone()
         if row is None:
             return None
         _execute(connection, "UPDATE users SET last_login_at = ? WHERE id = ?", (utc_now(), row["id"]))
