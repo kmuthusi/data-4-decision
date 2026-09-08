@@ -73,9 +73,9 @@ The prototype stores salted PBKDF2 password hashes in the ignored local file `da
 
 ### Microsoft Entra pilot deployment
 
-The app uses native Streamlit OIDC when `[auth]` and `[auth.microsoft]` secrets are configured. Register a single-tenant web application in Microsoft Entra ID, add the exact deployed callback URL ending in `/oauth2callback`, and restrict the app registration to the pilot security group. Copy `.streamlit/secrets.example.toml` into the deployment secret manager and replace its placeholders; never commit the real secret values.
+The app uses native Streamlit OIDC when `[auth]` and a named provider section such as `[auth.google]` or `[auth.microsoft]` are configured. The pilot template is configured for Google OIDC. Register the exact deployed callback URL ending in `/oauth2callback`, then copy `.streamlit/secrets.example.toml` into the deployment secret manager and replace its placeholders; never commit the real secret values.
 
-For Streamlit Community Cloud, deploy the private app from the GitHub repository, configure the values in the app's Secrets panel, and use a separate Entra app registration for local development and the pilot URL. The administrator must register each pilot user's Microsoft email/UPN in the Administration panel before that user can access the dashboard. Keep `data/auth.sqlite3` on a persistent volume or replace it with a managed database before relying on it for a multi-instance deployment.
+For Streamlit Community Cloud, deploy the private app from the GitHub repository, configure the values in the app's Secrets panel, and use a separate Google OAuth client for local development and the pilot URL. The administrator must register each pilot user's Google email in the Administration panel before that user can access the dashboard. Keep `data/auth.sqlite3` on a persistent volume or replace it with a managed database before relying on it for a multi-instance deployment.
 
 ## Included assets
 

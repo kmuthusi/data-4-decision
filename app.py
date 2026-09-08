@@ -389,21 +389,31 @@ def scope_builder(role: str, widget_prefix: str, initial: list[dict[str, str | N
     return [{"dataset": None if dataset_choice == "All datasets" else dataset_choice, "county": selected_county, "sub_county": selected_subcounty, "constituency": None, "ward": ward} for ward in selected_wards]
 
 
-def render_authentication() -> dict:
-    current_user = st.session_state.get("auth_user")
-    if current_user:
-        return current_user
+def configured_oidc() -> tuple[str | None, bool]:
+    """Return the configured named OIDC provider, if deployment secrets exist."""
     try:
         auth_config = st.secrets.get("auth")
     except Exception:
         auth_config = None
-    oidc_configured = bool(auth_config and (auth_config.get("microsoft") or auth_config.get("client_id")))
+    if not auth_config:
+        return None, False
+    for provider in ["google", "microsoft", "keycloak"]:
+        if auth_config.get(provider):
+            return provider, True
+    return (None, True) if auth_config.get("client_id") else (None, False)
+
+
+def render_authentication() -> dict:
+    current_user = st.session_state.get("auth_user")
+    if current_user:
+        return current_user
+    provider, oidc_configured = configured_oidc()
     if oidc_configured:
         if not st.user.is_logged_in:
             st.title("Data for Decision")
             st.info("Sign in with your organization account to continue.")
-            if st.button("Sign in with Microsoft"):
-                st.login("microsoft")
+            if st.button(f"Sign in with {provider.title() if provider else 'OIDC'}"):
+                st.login(provider)
             st.stop()
         identity = next((st.user.get(field) for field in ["sub", "email", "preferred_username"] if st.user.get(field)), None)
         email = st.user.get("email") or st.user.get("preferred_username")
@@ -468,12 +478,7 @@ def render_admin_panel(user: dict) -> None:
             auth_subject = st.text_input("Microsoft email or subject", key="new_auth_subject", help="Use the user's Entra email/UPN for the pilot. The value must match the identity returned after sign-in.")
             display_name = st.text_input("Display name", key="new_display_name")
             role = st.selectbox("Role", list(ROLES), key="new_role")
-            oidc_active = False
-            try:
-                configured_auth = st.secrets.get("auth")
-                oidc_active = bool(configured_auth and (configured_auth.get("microsoft") or configured_auth.get("client_id")))
-            except Exception:
-                pass
+            _, oidc_active = configured_oidc()
             password = "" if oidc_active else st.text_input("Temporary password", type="password", key="new_password", help="At least 12 characters for local development.")
             scopes = scope_builder(role, "new_scope")
             submitted = st.form_submit_button("Create user")
@@ -526,13 +531,10 @@ with st.sidebar:
     st.caption(f"Signed in: {auth_user['display_name']} ({auth_user['role']})")
     if st.button("Sign out"):
         st.session_state.pop("auth_user", None)
-        try:
-            configured_auth = st.secrets.get("auth")
-            if configured_auth and (configured_auth.get("microsoft") or configured_auth.get("client_id")) and st.user.is_logged_in:
-                st.logout()
-            else:
-                st.rerun()
-        except Exception:
+        _, oidc_active = configured_oidc()
+        if oidc_active and st.user.is_logged_in:
+            st.logout()
+        else:
             st.rerun()
     render_admin_panel(auth_user)
     accessible_datasets = []
